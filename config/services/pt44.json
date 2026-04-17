@@ -1,0 +1,11 @@
+{
+  "service_name": "pt44",
+  "label": "com.cyq.godfather.pt44",
+  "root_dir": "${GODFATHER_ROOT}",
+  "entry_script": "${GODFATHER_ROOT}/scripts/run_godfather_pt44_full_daily.sh",
+  "stdout_log": "${GODFATHER_ROOT}/logs/pt44_stdout.log",
+  "stderr_log": "${GODFATHER_ROOT}/logs/pt44_stderr.log",
+  "run_at_load": true,
+  "keep_alive": false,
+  "enabled": true
+}

@@ -1,0 +1,26 @@
+# Core data
+numpy>=1.26
+pandas>=2.1
+polars>=0.20
+pyarrow>=14.0
+
+# Machine learning
+xgboost>=2.0
+lightgbm>=4.0
+scipy>=1.11
+
+# Market data
+yfinance>=0.2
+
+# Broker API
+alpaca-py>=0.20
+
+# Dashboard
+streamlit>=1.30
+
+# Utilities
+requests>=2.31
+rich>=13.0
+
+# Visualization (optional, used in research scripts)
+matplotlib>=3.8

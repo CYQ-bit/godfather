@@ -1,0 +1,11 @@
+{
+  "service_name": "dashboard",
+  "label": "com.cyq.godfather.dashboard",
+  "root_dir": "${GODFATHER_ROOT}",
+  "entry_script": "${GODFATHER_ROOT}/scripts/run_godfather_control_center.sh",
+  "stdout_log": "${GODFATHER_ROOT}/logs/dashboard_stdout.log",
+  "stderr_log": "${GODFATHER_ROOT}/logs/dashboard_stderr.log",
+  "run_at_load": true,
+  "keep_alive": true,
+  "enabled": true
+}

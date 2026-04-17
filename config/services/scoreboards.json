@@ -1,0 +1,11 @@
+{
+  "service_name": "scoreboards",
+  "label": "com.cyq.godfather.scoreboards",
+  "root_dir": "${GODFATHER_ROOT}",
+  "entry_script": "${GODFATHER_ROOT}/scripts/run_godfather_scoreboards.sh",
+  "stdout_log": "${GODFATHER_ROOT}/logs/scoreboards_stdout.log",
+  "stderr_log": "${GODFATHER_ROOT}/logs/scoreboards_stderr.log",
+  "run_at_load": true,
+  "keep_alive": true,
+  "enabled": false
+}

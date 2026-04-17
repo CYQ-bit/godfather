@@ -1,0 +1,39 @@
+# Secrets — never commit these
+.env.godfather
+.env.godfather_v91
+.env
+data/pt4_prep/broker_connection_config.json
+v91/data/pt4_prep/broker_connection_config.json
+
+# Runtime data — generated at runtime, not source code
+data/
+logs/
+v91/data/
+v91/logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+*.so
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Lock files (keep requirements.txt, not lock files)
+Pipfile.lock
+poetry.lock

@@ -1,0 +1,11 @@
+{
+  "service_name": "pt43",
+  "label": "com.cyq.godfather.pt43",
+  "root_dir": "${GODFATHER_ROOT}",
+  "entry_script": "${GODFATHER_ROOT}/scripts/run_godfather_pt43.sh",
+  "stdout_log": "${GODFATHER_ROOT}/logs/pt43_stdout.log",
+  "stderr_log": "${GODFATHER_ROOT}/logs/pt43_stderr.log",
+  "run_at_load": true,
+  "keep_alive": false,
+  "enabled": true
+}

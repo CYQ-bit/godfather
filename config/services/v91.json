@@ -1,0 +1,11 @@
+{
+  "service_name": "v91",
+  "label": "com.cyq.godfather.v91",
+  "root_dir": "${GODFATHER_ROOT}",
+  "entry_script": "${GODFATHER_ROOT}/scripts/run_godfather_pt44_full_daily.sh",
+  "stdout_log": "${GODFATHER_ROOT}/logs/v91_stdout.log",
+  "stderr_log": "${GODFATHER_ROOT}/logs/v91_stderr.log",
+  "run_at_load": true,
+  "keep_alive": false,
+  "enabled": true
+}
