@@ -33,19 +33,32 @@ def test_daily_inference_writes_fresh_files(setup):
 
 
 def test_daily_inference_refuses_stale_features(setup):
-    model_dir, fpath, feats, *_ = setup
+    model_dir, fpath, feats, labels, ov_cfg = setup
+    mv.train(feats, labels, ov_cfg, model_dir=model_dir, verbose=False)
     with pytest.raises(RuntimeError, match="stale"):
         rdi.run(fpath, model_dir, model_dir / "main.parquet", model_dir / "ov.parquet",
                 today=feats["timestamp"].max() + pd.Timedelta(days=10))
 
 
-def test_daily_inference_removes_old_overlay_when_model_missing(setup):
+def test_daily_inference_fails_when_overlay_model_missing(setup):
     model_dir, fpath, feats, *_ = setup
     old = model_dir / "ov.parquet"
     pd.DataFrame({"x": [1]}).to_parquet(old)
-    rdi.run(fpath, model_dir, model_dir / "main.parquet", old,
-            today=feats["timestamp"].max() + pd.Timedelta(days=1))
-    assert not old.exists()
+    with pytest.raises(FileNotFoundError, match="test_ov"):
+        rdi.run(fpath, model_dir, model_dir / "main.parquet", old,
+                today=feats["timestamp"].max() + pd.Timedelta(days=1))
+    assert old.exists()
+
+
+def test_daily_inference_rejects_partial_latest_universe(setup):
+    model_dir, fpath, feats, labels, ov_cfg = setup
+    mv.train(feats, labels, ov_cfg, model_dir=model_dir, verbose=False)
+    latest = feats["timestamp"].max()
+    partial = feats[(feats["timestamp"] != latest) | (feats["symbol"] == "S000")]
+    partial.to_parquet(fpath, index=False)
+    with pytest.raises(ValueError, match="cross-section is incomplete"):
+        rdi.run(fpath, model_dir, model_dir / "main.parquet", model_dir / "ov.parquet",
+                today=latest + pd.Timedelta(days=1))
 
 
 def test_daily_inference_fails_without_model(tmp_path):

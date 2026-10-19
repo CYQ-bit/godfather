@@ -156,8 +156,10 @@ def test_load_current_model_missing_raises(tmp_path):
 # ---------------------------------------------------------------- freshness
 
 def _pred(asof="2026-10-16", trained="2026-10-01", **extra):
-    df = pd.DataFrame({"symbol": ["A", "B"], "y_pred": [0.1, -0.1], "feature_asof": asof,
-                       "model_id": "m1", "trained_through": trained, "generated_at": "x"})
+    df = pd.DataFrame({"timestamp": pd.to_datetime([asof, asof]),
+                       "symbol": ["A", "B"], "y_pred": [0.1, -0.1], "feature_asof": asof,
+                       "model_id": "m1", "trained_through": trained,
+                       "generated_at": "2026-10-19T09:30:00-04:00"})
     for k, v in extra.items():
         df[k] = v
     return df
@@ -183,3 +185,22 @@ def test_freshness_rejects(pred, trading, word):
 def test_freshness_rejects_mixed_dates():
     df = pd.concat([_pred("2026-10-15"), _pred("2026-10-16")])
     assert "mixes feature dates" in mv.check_prediction_freshness(df, "2026-10-19")
+
+
+@pytest.mark.parametrize("pred,word", [
+    (_pred(y_pred=[np.nan, 0.1]), "non-finite"),
+    (_pred(symbol=["A", "A"]), "duplicate"),
+    (_pred(timestamp=pd.to_datetime(["2026-10-15", "2026-10-15"])), "do not match"),
+    (_pred(generated_at="2026-10-18T09:30:00-04:00"), "generated on"),
+])
+def test_freshness_rejects_invalid_payload(pred, word):
+    reason = mv.check_prediction_freshness(pred, "2026-10-19")
+    assert reason is not None and word in reason
+
+
+def test_latest_cross_section_rejects_partial_date():
+    _, feats, _ = make_market(n_sym=20, n_days=20)
+    latest = feats["timestamp"].max()
+    partial = feats[(feats["timestamp"] != latest) | (feats["symbol"] == "S000")]
+    with pytest.raises(ValueError, match="cross-section is incomplete"):
+        mv.validate_latest_cross_section(partial)

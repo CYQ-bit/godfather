@@ -43,7 +43,8 @@ class ConfidenceEngine:
         conf_df['confidence_bucket'] = pd.cut(
             conf_df['confidence_norm'],
             bins=[0, 0.33, 0.67, 1.0],
-            labels=['low', 'mid', 'high']
+            labels=['low', 'mid', 'high'],
+            include_lowest=True,
         )
 
         return conf_df

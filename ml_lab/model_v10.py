@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -51,8 +52,10 @@ LABEL_SPAN = EXEC_LAG + HORIZON
 # plus one holiday).
 MAX_FEATURE_AGE_DAYS = 4
 MAX_MODEL_AGE_DAYS = 60
+MIN_LATEST_COVERAGE_RATIO = 0.95
 
 PRED_META_COLS = ["feature_asof", "model_id", "trained_through", "generated_at"]
+PRED_REQUIRED_COLS = ["timestamp", "symbol", "y_pred", *PRED_META_COLS]
 
 
 @dataclass
@@ -345,7 +348,8 @@ def run_training_cli(cfg: ModelConfig) -> dict:
 
 # ---------------------------------------------------------------- inference
 
-def predict_latest(features: pd.DataFrame, model, meta: dict) -> pd.DataFrame:
+def predict_latest(features: pd.DataFrame, model, meta: dict,
+                   generated_at: Optional[pd.Timestamp] = None) -> pd.DataFrame:
     """Predict the latest feature date. Raises if model features are missing."""
     missing = [c for c in meta["features"] if c not in features.columns]
     if missing:
@@ -357,34 +361,112 @@ def predict_latest(features: pd.DataFrame, model, meta: dict) -> pd.DataFrame:
     X = today[meta["features"]].to_numpy(np.float32)
     out = today[["timestamp", "symbol"]].copy().reset_index(drop=True)
     out["y_pred"] = model.predict(X)
+    if not np.isfinite(pd.to_numeric(out["y_pred"], errors="coerce")).all():
+        raise ValueError(f"{meta['model_id']}: model produced non-finite predictions")
     out["feature_asof"] = asof.date().isoformat()
     out["model_id"] = meta["model_id"]
     out["trained_through"] = meta["trained_through"]
-    out["generated_at"] = datetime.now().isoformat(timespec="seconds")
+    generated = (
+        pd.Timestamp(generated_at)
+        if generated_at is not None
+        else pd.Timestamp(datetime.now(ZoneInfo("America/New_York")))
+    )
+    out["generated_at"] = generated.isoformat(timespec="seconds")
     return out
+
+
+def validate_latest_cross_section(features: pd.DataFrame,
+                                  min_coverage_ratio: float = MIN_LATEST_COVERAGE_RATIO,
+                                  lookback_dates: int = 5) -> dict:
+    """Reject a partial latest feature date before it can become a portfolio.
+
+    Coverage is measured against the median symbol count of recent prior dates,
+    which tolerates ordinary index membership changes but catches partial vendor
+    refreshes. Duplicate symbol/date rows are always rejected.
+    """
+    missing = [c for c in ("timestamp", "symbol") if c not in features.columns]
+    if missing:
+        raise ValueError(f"Feature matrix lacks required columns: {missing}")
+    if features.empty:
+        raise ValueError("Feature matrix is empty")
+    if features[["timestamp", "symbol"]].duplicated().any():
+        raise ValueError("Feature matrix contains duplicate timestamp/symbol rows")
+
+    counts = (
+        features.groupby("timestamp")["symbol"].nunique().sort_index()
+    )
+    if len(counts) < 2:
+        raise ValueError("Need at least two feature dates to validate latest-universe coverage")
+
+    latest_date = pd.Timestamp(counts.index[-1])
+    latest_count = int(counts.iloc[-1])
+    baseline = float(counts.iloc[-(lookback_dates + 1):-1].median())
+    if not np.isfinite(baseline) or baseline <= 0:
+        raise ValueError("Cannot establish a prior-date universe coverage baseline")
+    ratio = latest_count / baseline
+    if ratio < min_coverage_ratio:
+        raise ValueError(
+            "Latest feature cross-section is incomplete: "
+            f"{latest_count} symbols on {latest_date.date()} vs recent median "
+            f"{baseline:.0f} ({ratio:.1%} < {min_coverage_ratio:.1%})"
+        )
+    return {
+        "latest_date": latest_date.date().isoformat(),
+        "latest_symbols": latest_count,
+        "baseline_symbols": int(round(baseline)),
+        "coverage_ratio": ratio,
+    }
 
 
 def check_prediction_freshness(pred: pd.DataFrame, trading_date: str,
                                max_feature_age_days: int = MAX_FEATURE_AGE_DAYS,
                                max_model_age_days: int = MAX_MODEL_AGE_DAYS) -> Optional[str]:
     """Return None if `pred` is usable for trading_date, else the reason it is not."""
-    missing = [c for c in PRED_META_COLS if c not in pred.columns]
+    missing = [c for c in PRED_REQUIRED_COLS if c not in pred.columns]
     if missing:
         return f"prediction file lacks {missing} (produced by the old mock pipeline?)"
     if pred.empty:
         return "prediction file is empty"
+    if pred["symbol"].isna().any() or pred["symbol"].astype(str).str.strip().eq("").any():
+        return "prediction file contains blank symbols"
+    y_pred = pd.to_numeric(pred["y_pred"], errors="coerce")
+    if not np.isfinite(y_pred).all():
+        return "prediction file contains non-finite y_pred values"
     asofs = pred["feature_asof"].unique()
     if len(asofs) != 1:
         return f"prediction file mixes feature dates {sorted(asofs)[:3]}"
     if pred["model_id"].nunique() != 1:
         return "prediction file mixes model ids"
     td = pd.Timestamp(trading_date).normalize()
-    asof = pd.Timestamp(asofs[0])
+    try:
+        asof = pd.Timestamp(asofs[0]).normalize()
+    except Exception:
+        return f"invalid feature_asof value {asofs[0]!r}"
+    timestamps = pd.to_datetime(pred["timestamp"], errors="coerce")
+    if timestamps.isna().any():
+        return "prediction file contains invalid timestamps"
+    timestamp_dates = pd.DatetimeIndex(timestamps).normalize().unique()
+    if len(timestamp_dates) != 1 or pd.Timestamp(timestamp_dates[0]) != asof:
+        return "prediction timestamps do not match feature_asof"
+    if pred["symbol"].duplicated().any():
+        return "prediction file contains duplicate symbols"
     if asof >= td:
         return f"feature_asof {asof.date()} is not before trading date {td.date()}"
     if (td - asof).days > max_feature_age_days:
         return f"features are stale: feature_asof {asof.date()}, trading {td.date()}"
-    trained = pd.Timestamp(pred["trained_through"].iloc[0])
+    if pred["trained_through"].nunique() != 1:
+        return "prediction file mixes trained_through dates"
+    try:
+        trained = pd.Timestamp(pred["trained_through"].iloc[0]).normalize()
+    except Exception:
+        return "prediction file contains invalid trained_through"
     if (td - trained).days > max_model_age_days:
         return f"model is stale: trained through {trained.date()}, retrain required"
+    if pred["generated_at"].nunique() != 1:
+        return "prediction file mixes generated_at values"
+    generated = pd.to_datetime(pred["generated_at"].iloc[0], errors="coerce")
+    if pd.isna(generated):
+        return "prediction file contains invalid generated_at"
+    if generated.date() != td.date():
+        return f"predictions were generated on {generated.date()}, not trading date {td.date()}"
     return None

@@ -30,7 +30,7 @@ from paper_trading.order_preview_export import (
 )
 from paper_trading.order_sizing import load_tiny_capital_config
 from paper_trading.ui_console import UIConsole
-from ml_lab.model_v10 import check_prediction_freshness
+from ml_lab.model_v10 import MIN_LATEST_COVERAGE_RATIO, check_prediction_freshness
 
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -57,11 +57,33 @@ def load_feature_metadata(path: Path) -> dict:
     )
 
     latest_date = pd.Timestamp(stats_df["latest_date"][0]).date().isoformat()
+    recent_counts = (
+        pl.scan_parquet(str(path))
+        .group_by("timestamp")
+        .agg(pl.col("symbol").n_unique().alias("symbols"))
+        .sort("timestamp")
+        .tail(6)
+        .collect()
+    )
+    if len(recent_counts) < 2:
+        raise ValueError("Need at least two feature dates to validate universe coverage")
+    latest_symbols = int(recent_counts["symbols"][-1])
+    baseline_symbols = float(recent_counts["symbols"][:-1].median())
+    coverage_ratio = latest_symbols / baseline_symbols
+    if coverage_ratio < MIN_LATEST_COVERAGE_RATIO:
+        raise ValueError(
+            "Latest feature cross-section is incomplete: "
+            f"{latest_symbols} vs recent median {baseline_symbols:.0f} "
+            f"({coverage_ratio:.1%} < {MIN_LATEST_COVERAGE_RATIO:.1%})"
+        )
     return {
         "path": str(path),
         "rows": int(stats_df["rows"][0]),
         "latest_date": latest_date,
         "symbols": int(stats_df["symbols"][0]),
+        "latest_symbols": latest_symbols,
+        "baseline_symbols": int(round(baseline_symbols)),
+        "coverage_ratio": coverage_ratio,
     }
 
 
@@ -141,6 +163,8 @@ def main() -> int:
             "Latest feature date": feature["latest_date"],
             "Feature rows": feature["rows"],
             "Feature symbols": feature["symbols"],
+            "Latest-date symbols": feature["latest_symbols"],
+            "Universe coverage": f"{feature['coverage_ratio']:.1%}",
         },
         "Feature Source",
     )

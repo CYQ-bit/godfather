@@ -23,6 +23,7 @@ from ml_lab.model_v10 import check_prediction_freshness
 from paper_trading.portfolio_constructor import PortfolioConstructor
 from paper_trading.order_sizing import build_delta_orders, load_tiny_capital_config
 from paper_trading.position_sizing_v10 import apply_v10_adjustments
+from paper_trading.rebalance_state import commit_rebalance_state, preview_rebalance_state
 from paper_trading.execution_cost_model import ExecutionCostModel
 from alpha_factory.regime_engine import load_regime_state
 from alpha_factory.confidence_engine import ConfidenceEngine
@@ -38,6 +39,8 @@ _REPO_ROOT = Path(os.environ.get("GODFATHER_ROOT", str(Path(__file__).resolve().
 
 REPO_ROOT = Path(__file__).parent.parent
 STATE_FILE = REPO_ROOT / 'data/paper_trading/state/pt42_complete_state.json'
+REBALANCE_STATE_FILE = REPO_ROOT / 'data/paper_trading/state/rebalance_state.json'
+REBALANCE_FREQUENCY = 5
 UNIVERSE_PATH = get_universe_path()
 PRICE_DIR = get_price_lake_dir()
 
@@ -309,43 +312,30 @@ def generate_signals(ui, trading_date, sector_map=None):
         signals = main_df.copy()
         signals['main_score'] = signals['y_pred']
 
-        # Load and validate overlay predictions
-        overlay_disabled = False
-        if overlay_path.exists():
-            overlay_df = pd.read_parquet(overlay_path)
-            if check_prediction_freshness(overlay_df, trading_date) is None:
-                overlay_df['date'] = overlay_df['feature_asof'].astype(str)
-                overlay_latest = overlay_df['date'].max()
-            else:
-                overlay_latest = None
+        # The production strategy is dual-model: never silently degrade to main-only.
+        if not overlay_path.exists():
+            return None, "error: no_overlay_predictions"
+        overlay_df = pd.read_parquet(overlay_path)
+        overlay_reason = check_prediction_freshness(overlay_df, trading_date)
+        if overlay_reason:
+            return None, f"error: stale_overlay_predictions ({overlay_reason})"
+        overlay_df['date'] = overlay_df['feature_asof'].astype(str)
+        overlay_latest = overlay_df['date'].max()
+        ui.print(f"OVERLAY_REQUESTED_DATE={main_pred_date}", "cyan")
+        ui.print(f"OVERLAY_ACTUAL_DATE={overlay_latest}", "cyan")
+        if overlay_latest != main_pred_date:
+            return None, "error: overlay_date_mismatch"
+        if set(overlay_df['symbol']) != set(main_df['symbol']):
+            return None, "error: overlay_universe_mismatch"
 
-            ui.print(f"OVERLAY_REQUESTED_DATE={main_pred_date}", "cyan")
-            ui.print(f"OVERLAY_ACTUAL_DATE={overlay_latest}", "cyan")
-
-            if overlay_latest == main_pred_date:
-                ui.print("OVERLAY_DATE_MATCH=YES", "green")
-                overlay_today = overlay_df[overlay_df['date'] == main_pred_date][
-                    ['symbol', 'overlay_score', 'overlay_confidence', 'overlay_filter_flag']
-                ]
-                signals = signals.merge(overlay_today, on='symbol', how='left')
-                signals['overlay_confidence'] = signals['overlay_confidence'].fillna('mid')
-                signals['overlay_filter_flag'] = signals['overlay_filter_flag'].fillna('ok')
-                conf_mult = signals['overlay_confidence'].map({'high': 1.2, 'mid': 1.0, 'low': 0.7})
-                signals['score_with_overlay'] = signals['main_score'] * conf_mult
-                ui.print(f"✓ Overlay applied: {len(signals)} signals", "green")
-            else:
-                ui.print("OVERLAY_DATE_MATCH=NO", "yellow")
-                ui.print("OVERLAY_DISABLED_FOR_TODAY=YES", "yellow")
-                overlay_disabled = True
-        else:
-            ui.print("OVERLAY_DISABLED_FOR_TODAY=YES (file not found)", "yellow")
-            overlay_disabled = True
-
-        if overlay_disabled:
-            signals['overlay_score'] = 0.0
-            signals['overlay_confidence'] = 'mid'
-            signals['overlay_filter_flag'] = 'ok'
-            signals['score_with_overlay'] = signals['main_score']
+        ui.print("OVERLAY_DATE_MATCH=YES", "green")
+        overlay_today = overlay_df[
+            ['symbol', 'overlay_score', 'overlay_confidence', 'overlay_filter_flag']
+        ]
+        signals = signals.merge(overlay_today, on='symbol', how='left', validate='one_to_one')
+        conf_mult = signals['overlay_confidence'].map({'high': 1.2, 'mid': 1.0, 'low': 0.7})
+        signals['score_with_overlay'] = signals['main_score'] * conf_mult
+        ui.print(f"✓ Overlay applied: {len(signals)} signals", "green")
 
         # Generate sector_neutral_score (z-score within sector)
         if sector_map:
@@ -362,7 +352,7 @@ def generate_signals(ui, trading_date, sector_map=None):
 
         ui.status_table({
             'Signals': len(signals),
-            'Overlay status': 'DISABLED' if overlay_disabled else 'ACTIVE',
+            'Overlay status': 'ACTIVE',
             'Filtered bad': int((signals['overlay_filter_flag'] == 'bad').sum())
         }, "Dual Model")
 
@@ -373,13 +363,17 @@ def generate_signals(ui, trading_date, sector_map=None):
         return None, f"error: {e}"
 
 
-def generate_target_portfolio(ui, signals, trading_date, current_holdings=None):
+def generate_target_portfolio(ui, signals, trading_date, current_holdings=None,
+                              rebalance_due=None):
     """Generate target portfolio from signals"""
     ui.section("Target Portfolio Generation")
 
     if signals is None:
         ui.print("⚠️  No signals - skipping target generation", "yellow")
         return None, "no_signals"
+    if rebalance_due is False:
+        ui.print("⚠️  Not a rebalance session", "yellow")
+        return None, "not_rebalance_day"
 
     try:
         portfolio_constructor = PortfolioConstructor(
@@ -394,13 +388,14 @@ def generate_target_portfolio(ui, signals, trading_date, current_holdings=None):
             portfolio_constructor.current_holdings = set(current_holdings.keys())
 
         # Check if rebalance day
-        if not portfolio_constructor.should_rebalance(trading_date):
+        if rebalance_due is None and not portfolio_constructor.should_rebalance(trading_date):
             ui.print("⚠️  Not a rebalance day", "yellow")
             return None, "not_rebalance_day"
 
         target_weights = portfolio_constructor.construct_target_portfolio(
             signal_data=signals,
-            current_date=trading_date
+            current_date=trading_date,
+            force_rebalance=rebalance_due is True,
         )
 
         if target_weights is None or len(target_weights) == 0:
@@ -758,17 +753,24 @@ def main():
         broker.disconnect()
         sys.exit(1)
 
-    # Step 6: Target generation
+    # Step 6: Target generation. The persisted counter advances only for a
+    # successfully processed market session, so validation scripts stay read-only.
+    rebalance_state = preview_rebalance_state(
+        trading_date, REBALANCE_STATE_FILE, REBALANCE_FREQUENCY)
     target_weights, target_status = generate_target_portfolio(
         ui,
         signals,
         trading_date,
-        current_holdings=current_holdings
+        current_holdings=current_holdings,
+        rebalance_due=rebalance_state["rebalance_due"],
     )
 
     if target_weights is None or len(target_weights) == 0:
         ui.alert_panel(f"No target portfolio ({target_status}) - no orders today", "warning")
         record_run(trading_date, f"pt44_{trading_date}_{ny_time.strftime('%H%M%S')}", f"skipped_{target_status}")
+        if target_status == "not_rebalance_day":
+            commit_rebalance_state(
+                rebalance_state, rebalanced=False, state_file=REBALANCE_STATE_FILE)
         broker.disconnect()
         sys.exit(0 if target_status in ("not_rebalance_day", "no_targets") else 1)
 
@@ -844,6 +846,12 @@ def main():
     if exec_status == 'post_trade_sync_failed':
         run_status = 'post_trade_sync_failed'
         summary_status = 'POST_TRADE_SYNC_FAILED'
+    elif exec_status in ('success', 'no_orders'):
+        commit_rebalance_state(
+            rebalance_state, rebalanced=True, state_file=REBALANCE_STATE_FILE)
+    else:
+        run_status = exec_status
+        summary_status = exec_status.upper()
 
     # Record run
     run_id = f"pt44_{trading_date}_{ny_time.strftime('%H%M%S')}"
