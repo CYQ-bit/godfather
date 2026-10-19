@@ -88,7 +88,7 @@ class OOSBacktester:
         return ic_metrics
 
     def create_portfolio(self, predictions_df: pd.DataFrame, top_pct=0.1, bottom_pct=0.1,
-                        holding_days=5, non_overlapping=True) -> pd.DataFrame:
+                        holding_days=5, non_overlapping=True, cost_bps=10.0) -> pd.DataFrame:
         """
         基于预测值创建Top/Bottom组合（支持非重叠持有期）
 
@@ -98,6 +98,7 @@ class OOSBacktester:
             bottom_pct: Bottom组合百分比
             holding_days: 持有天数（默认5天）
             non_overlapping: 是否使用非重叠持有期（默认True）
+            cost_bps: 单边交易成本（基点）。按每期多、空两腿的换手比例扣除，买卖双边各算一次
 
         Returns:
             portfolio_returns: 组合收益DataFrame
@@ -123,6 +124,7 @@ class OOSBacktester:
             # 重叠模式：每天都再平衡（原始逻辑）
             rebalance_dates = all_dates
 
+        prev_top, prev_bottom = set(), set()
         for date in rebalance_dates:
             group = predictions_df[predictions_df['timestamp'] == date]
 
@@ -144,14 +146,23 @@ class OOSBacktester:
             bottom_stocks = group.tail(n_bottom)
             bottom_return = bottom_stocks['y_true'].mean()
 
-            # Long-Short组合
-            ls_return = top_return - bottom_return
+            # 换手：本期新进入的名字占比（等权）；首期为全部建仓
+            top_set, bottom_set = set(top_stocks['symbol']), set(bottom_stocks['symbol'])
+            turn_top = 1 - len(top_set & prev_top) / len(top_set)
+            turn_bottom = 1 - len(bottom_set & prev_bottom) / len(bottom_set)
+            prev_top, prev_bottom = top_set, bottom_set
+            # 换出卖一次、换入买一次 => 每腿成本 = 2 * 换手 * 单边成本
+            cost = 2 * (turn_top + turn_bottom) * cost_bps / 1e4
+
+            # Long-Short组合（扣成本）
+            ls_return = top_return - bottom_return - cost
 
             portfolio_returns.append({
                 'date': date,
                 'top_return': top_return,
                 'bottom_return': bottom_return,
                 'ls_return': ls_return,
+                'cost': cost,
                 'n_stocks': n_stocks,
                 'holding_days': holding_days
             })

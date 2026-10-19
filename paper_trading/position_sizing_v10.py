@@ -48,17 +48,19 @@ def apply_v10_adjustments(target_weights_df, regime=None, conf_df=None):
         'high': 1.3, 'mid': 1.0, 'low': 0.6
     }).fillna(1.0).astype(float)
 
-    # 应用调节 (真实生效)
-    result_df['weight_v10'] = (
+    # First redistribute within the original portfolio using confidence.
+    confidence_adjusted = (
         result_df['target_weight'].astype(float) *
-        result_df['confidence_multiplier'] *
-        float(regime_mult)
+        result_df['confidence_multiplier']
     )
+    original_exposure = result_df['target_weight'].astype(float).sum()
+    adjusted_total = confidence_adjusted.sum()
+    if adjusted_total > 0:
+        confidence_adjusted = confidence_adjusted / adjusted_total * original_exposure
 
-    # 归一化
-    total = result_df['weight_v10'].sum()
-    if total > 0:
-        result_df['weight_v10'] = result_df['weight_v10'] / total
+    # Apply the regime multiplier after relative-weight normalization so it
+    # changes gross exposure instead of being cancelled back to 100%.
+    result_df['weight_v10'] = confidence_adjusted * float(regime_mult)
 
     result_df['regime_state'] = regime_state
     result_df['regime_mult'] = regime_mult

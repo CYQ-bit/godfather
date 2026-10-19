@@ -1,6 +1,6 @@
 """
 Confidence Engine v1 - V10.0
-基于 predictions_8window.parquet 构建置信度层
+基于 main_predictions_v10.parquet（当日模型预测）构建置信度层
 """
 import pandas as pd
 import numpy as np
@@ -15,7 +15,7 @@ class ConfidenceEngine:
     """置信度引擎"""
 
     def __init__(self):
-        self.pred_file = (_REPO_ROOT / 'data/ml2_results/predictions_8window.parquet')
+        self.pred_file = (_REPO_ROOT / 'data/ml2_results/main_predictions_v10.parquet')
         self.data_dir = (_REPO_ROOT / 'data/ai_engine')
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -43,7 +43,8 @@ class ConfidenceEngine:
         conf_df['confidence_bucket'] = pd.cut(
             conf_df['confidence_norm'],
             bins=[0, 0.33, 0.67, 1.0],
-            labels=['low', 'mid', 'high']
+            labels=['low', 'mid', 'high'],
+            include_lowest=True,
         )
 
         return conf_df

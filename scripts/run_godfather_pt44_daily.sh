@@ -131,7 +131,7 @@ esac
 log ""
 log "[Step 2/5] Generate fresh predictions"
 log "========================================"
-if python3 -u ml_lab/run_fresh_predictions.py 2>&1 | tee -a "$LOG_FILE"; then
+if python3 -u ml_lab/run_daily_inference.py 2>&1 | tee -a "$LOG_FILE"; then
     PRED_STATUS="success"
     log "✅ Fresh predictions generated successfully"
 else
