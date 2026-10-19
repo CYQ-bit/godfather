@@ -1,6 +1,6 @@
 """
 Confidence Engine v1 - V10.0
-基于 predictions_8window.parquet 构建置信度层
+基于 main_predictions_v10.parquet（当日模型预测）构建置信度层
 """
 import pandas as pd
 import numpy as np
@@ -15,7 +15,7 @@ class ConfidenceEngine:
     """置信度引擎"""
 
     def __init__(self):
-        self.pred_file = (_REPO_ROOT / 'data/ml2_results/predictions_8window.parquet')
+        self.pred_file = (_REPO_ROOT / 'data/ml2_results/main_predictions_v10.parquet')
         self.data_dir = (_REPO_ROOT / 'data/ai_engine')
         self.data_dir.mkdir(parents=True, exist_ok=True)
 

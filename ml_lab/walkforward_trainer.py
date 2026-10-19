@@ -20,7 +20,8 @@ import pickle
 
 
 class WalkForwardTrainer:
-    def __init__(self, train_months=24, test_months=2, step_months=2, max_windows=None):
+    def __init__(self, train_months=24, test_months=2, step_months=2, max_windows=None,
+                 embargo_days=10):
         """
         初始化Walk-forward训练器
 
@@ -29,11 +30,14 @@ class WalkForwardTrainer:
             test_months: 测试窗口月数
             step_months: 滚动步长月数
             max_windows: 最大窗口数（用于快速测试）
+            embargo_days: 训练窗与测试窗之间的隔离期（自然日）。target 是未来5个交易日收益，
+                          隔离期必须覆盖标签跨度，否则训练尾部标签会用到测试期价格
         """
         self.train_months = train_months
         self.test_months = test_months
         self.step_months = step_months
         self.max_windows = max_windows
+        self.embargo_days = embargo_days
 
         # XGBoost默认参数（稳健配置）
         self.xgb_params = {
@@ -66,6 +70,7 @@ class WalkForwardTrainer:
         print(f"  训练窗口: {self.train_months} 个月")
         print(f"  测试窗口: {self.test_months} 个月")
         print(f"  滚动步长: {self.step_months} 个月")
+        print(f"  隔离期: {self.embargo_days} 天")
 
         windows = []
         current_train_start = min_date
@@ -74,8 +79,8 @@ class WalkForwardTrainer:
             # 计算训练窗口结束时间
             train_end = current_train_start + timedelta(days=self.train_months * 30)
 
-            # 计算测试窗口
-            test_start = train_end
+            # 计算测试窗口（跳过隔离期，防止标签泄漏）
+            test_start = train_end + timedelta(days=self.embargo_days)
             test_end = test_start + timedelta(days=self.test_months * 30)
 
             # 检查是否超出数据范围

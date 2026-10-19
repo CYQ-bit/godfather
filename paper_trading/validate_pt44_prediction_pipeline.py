@@ -12,6 +12,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from paper_trading.ui_console import UIConsole
+from ml_lab.model_v10 import check_prediction_freshness
 from paper_trading.run_pt44_unified import (
     calculate_portfolio_delta,
     generate_signals,
@@ -20,8 +21,7 @@ from paper_trading.run_pt44_unified import (
 
 
 REPO_ROOT = Path(__file__).parent.parent
-COMPAT_PREDICTIONS = REPO_ROOT / "data/ml2_results/predictions_8window.parquet"
-FRESH_PREDICTIONS = REPO_ROOT / "data/ml2_results/predictions_fresh.parquet"
+COMPAT_PREDICTIONS = REPO_ROOT / "data/ml2_results/main_predictions_v10.parquet"
 
 
 def load_prediction_metadata(path: Path) -> dict:
@@ -55,18 +55,12 @@ def main() -> int:
 
     ui.section("Prediction File Validation")
     compat = load_prediction_metadata(COMPAT_PREDICTIONS)
-    fresh = load_prediction_metadata(FRESH_PREDICTIONS)
-
-    if compat["latest_date"] != fresh["latest_date"]:
-        raise ValueError(
-            "Fresh and PT.4.4 prediction dates do not match: "
-            f"{fresh['latest_date']} vs {compat['latest_date']}"
-        )
-    if compat["rows"] != fresh["rows"]:
-        raise ValueError(
-            "Fresh and PT.4.4 prediction row counts do not match: "
-            f"{fresh['rows']} vs {compat['rows']}"
-        )
+    reason = check_prediction_freshness(
+        pd.read_parquet(COMPAT_PREDICTIONS),
+        datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d"),
+    )
+    if reason:
+        raise ValueError(f"Main predictions are not usable today: {reason}")
 
     ui.status_table(
         {

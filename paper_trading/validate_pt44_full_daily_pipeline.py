@@ -30,12 +30,11 @@ from paper_trading.order_preview_export import (
 )
 from paper_trading.order_sizing import load_tiny_capital_config
 from paper_trading.ui_console import UIConsole
+from ml_lab.model_v10 import check_prediction_freshness
 
 
 REPO_ROOT = Path(__file__).parent.parent
 FEATURE_PATH = REPO_ROOT / "data" / "feature_store" / "ml_alpha_matrix.parquet"
-FRESH_PREDICTIONS = REPO_ROOT / "data" / "ml2_results" / "predictions_fresh.parquet"
-COMPAT_PREDICTIONS = REPO_ROOT / "data" / "ml2_results" / "predictions_8window.parquet"
 MAIN_PREDICTIONS = REPO_ROOT / "data" / "ml2_results" / "main_predictions_v10.parquet"
 OVERLAY_PREDICTIONS = REPO_ROOT / "data" / "ml2_results" / "recent_overlay_predictions.parquet"
 BROKER_CONFIG = REPO_ROOT / "data" / "pt4_prep" / "broker_connection_config.json"
@@ -98,9 +97,18 @@ def main() -> int:
 
     ui.section("Feature Validation")
     feature = load_feature_metadata(FEATURE_PATH)
-    fresh = load_prediction_metadata(FRESH_PREDICTIONS)
-    compat = load_prediction_metadata(COMPAT_PREDICTIONS)
     main_meta = load_prediction_metadata(MAIN_PREDICTIONS)
+    compat = main_meta
+    main_df = pd.read_parquet(MAIN_PREDICTIONS)
+    reason = check_prediction_freshness(
+        main_df, datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d"))
+    if reason:
+        raise ValueError(f"Main predictions are not usable today: {reason}")
+    if str(main_df["feature_asof"].iloc[0]) != feature["latest_date"]:
+        raise ValueError(
+            "Predictions were not made on the latest feature date: "
+            f"{main_df['feature_asof'].iloc[0]} vs {feature['latest_date']}"
+        )
 
     # --- Dual-model date alignment check ---
     ui.section("Dual-Model Date Alignment")
@@ -126,21 +134,6 @@ def main() -> int:
         )
     elif not overlay_disabled:
         ui.print(f"✓ Overlay date aligned: {main_latest}", "green")
-
-    if fresh["latest_date"] != compat["latest_date"]:
-        raise ValueError(
-            "Prediction latest dates do not match: "
-            f"{fresh['latest_date']} vs {compat['latest_date']}"
-        )
-    if fresh["rows"] != compat["rows"]:
-        raise ValueError(
-            f"Prediction row counts do not match: {fresh['rows']} vs {compat['rows']}"
-        )
-    if feature["latest_date"] != fresh["latest_date"]:
-        raise ValueError(
-            "Feature latest date does not match prediction latest date: "
-            f"{feature['latest_date']} vs {fresh['latest_date']}"
-        )
 
     ui.status_table(
         {
@@ -186,11 +179,9 @@ def main() -> int:
         signal_count = len(signals)
         used_prediction_date = pd.to_datetime(signals["date"]).max().date().isoformat()
 
-    # PT44 must read the latest available prediction date from main_predictions_v10
-    # Note: prediction date lags feature date by ~7 days due to target forward-return horizon
     if used_prediction_date != main_meta["latest_date"]:
         raise ValueError(
-            "PT.4.4 is not reading the latest prediction date: "
+            "PT.4.4 is not reading the current prediction date: "
             f"{used_prediction_date} vs {main_meta['latest_date']}"
         )
     print(f"PREDICTION_LAG_DAYS={(pd.Timestamp(feature['latest_date']) - pd.Timestamp(used_prediction_date)).days}")

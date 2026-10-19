@@ -7,13 +7,13 @@ import json
 import sys
 from copy import deepcopy
 from pathlib import Path
+import os
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+_REPO_ROOT = Path(os.environ.get("GODFATHER_ROOT", str(Path(__file__).resolve().parent.parent.parent)))
 
 from paper_trading.broker_connection import BrokerConnection
 from paper_trading.broker_local_sync import (
-import os
-_REPO_ROOT = Path(os.environ.get("GODFATHER_ROOT", str(Path(__file__).resolve().parent.parent.parent)))
     STATE_FILE,
     FILLS_LEDGER_FILE,
     load_combined_local_state,

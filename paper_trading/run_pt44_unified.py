@@ -19,7 +19,7 @@ from paper_trading.telegram_reporter import TelegramReporter
 from paper_trading.pre_trade_hard_gate import PreTradeHardGate
 from paper_trading.manual_review_checkpoints import ManualReviewCheckpoints
 from paper_trading.hard_stop_rules import HardStopRules
-from paper_trading.signal_runner import SignalRunner
+from ml_lab.model_v10 import check_prediction_freshness
 from paper_trading.portfolio_constructor import PortfolioConstructor
 from paper_trading.order_sizing import build_delta_orders, load_tiny_capital_config
 from paper_trading.position_sizing_v10 import apply_v10_adjustments
@@ -289,34 +289,35 @@ def generate_signals(ui, trading_date, sector_map=None):
     overlay_path = (_REPO_ROOT / 'data/ml2_results/recent_overlay_predictions.parquet')
 
     if not main_path.exists():
-        ui.print("⚠️  No main predictions found - skipping", "yellow")
-        return None, "no_predictions"
+        ui.print("❌ No main predictions found - run ml_lab/run_daily_inference.py", "red")
+        return None, "error: no_predictions"
 
     try:
-        # Load main model predictions
         main_df = pd.read_parquet(main_path)
-        main_df['date'] = pd.to_datetime(main_df['timestamp']).dt.date.astype(str)
 
-        # Use latest available date
-        available_dates = main_df['date'].unique()
-        if trading_date not in available_dates:
-            latest_date = main_df['date'].max()
-            ui.print(f"⚠️  Using latest: {latest_date}", "yellow")
-            trading_date = latest_date
+        # Fail closed: never fall back to an older prediction date.
+        reason = check_prediction_freshness(main_df, trading_date)
+        if reason:
+            ui.print(f"❌ Main predictions rejected: {reason}", "red")
+            return None, f"error: stale_predictions ({reason})"
 
-        main_pred_date = trading_date
-        ui.print(f"MAIN_PREDICTION_DATE={main_pred_date}", "cyan")
+        main_pred_date = str(main_df['feature_asof'].iloc[0])
+        main_df['date'] = main_pred_date
+        ui.print(f"MAIN_PREDICTION_DATE={main_pred_date} (features as of prior close)", "cyan")
+        ui.print(f"MAIN_MODEL_ID={main_df['model_id'].iloc[0]}", "cyan")
 
-        # Filter to trading date
-        signals = main_df[main_df['date'] == trading_date].copy()
+        signals = main_df.copy()
         signals['main_score'] = signals['y_pred']
 
         # Load and validate overlay predictions
         overlay_disabled = False
         if overlay_path.exists():
             overlay_df = pd.read_parquet(overlay_path)
-            overlay_df['date'] = pd.to_datetime(overlay_df['timestamp']).dt.date.astype(str)
-            overlay_latest = overlay_df['date'].max()
+            if check_prediction_freshness(overlay_df, trading_date) is None:
+                overlay_df['date'] = overlay_df['feature_asof'].astype(str)
+                overlay_latest = overlay_df['date'].max()
+            else:
+                overlay_latest = None
 
             ui.print(f"OVERLAY_REQUESTED_DATE={main_pred_date}", "cyan")
             ui.print(f"OVERLAY_ACTUAL_DATE={overlay_latest}", "cyan")
@@ -365,43 +366,6 @@ def generate_signals(ui, trading_date, sector_map=None):
             'Filtered bad': int((signals['overlay_filter_flag'] == 'bad').sum())
         }, "Dual Model")
 
-        return signals, "success"
-
-    except Exception as e:
-        ui.print(f"❌ Error: {e}", "red")
-        return None, "error"
-
-    try:
-        signal_runner = SignalRunner(
-            predictions_path=str(predictions_path),
-            model_version="ML.2_frozen",
-            feature_version="B.2_frozen"
-        )
-
-        signal_runner.load_predictions()
-
-        # Use latest available date if today's date not in predictions
-        available_dates = signal_runner.predictions['date'].unique()
-        if pd.to_datetime(trading_date) not in pd.to_datetime(available_dates):
-            latest_date = signal_runner.predictions['date'].max()
-            ui.print(f"⚠️  Using latest available predictions: {latest_date}", "yellow")
-            trading_date = str(latest_date)[:10]
-
-        signals = signal_runner.generate_signal(signal_date=trading_date, sector_map=sector_map)
-
-        if signals is None or len(signals) == 0:
-            ui.print("⚠️  No signals for today", "yellow")
-            return None, "no_signals_today"
-
-        if 'sector' in signals.columns:
-            unknown_count = int((signals['sector'] == 'Unknown').sum())
-            mapped_sector_count = int(signals.loc[signals['sector'] != 'Unknown', 'sector'].nunique())
-            ui.status_table({
-                'Mapped sectors': mapped_sector_count,
-                'Unknown symbols': unknown_count
-            }, "Sector Coverage")
-
-        ui.print(f"✅ Generated {len(signals)} signals", "green")
         return signals, "success"
 
     except Exception as e:
@@ -765,7 +729,7 @@ def main():
     # Step 3: Broker connection
     ui.section("Broker Connection")
     broker = BrokerConnection(
-        config_file='Path(__file__).resolve().parent.parent/data/pt4_prep/broker_connection_config.json'
+        config_file=str(_REPO_ROOT / 'data/pt4_prep/broker_connection_config.json')
     )
 
     if not broker.connect():
@@ -788,6 +752,11 @@ def main():
 
     # Step 5: Signal generation
     signals, signal_status = generate_signals(ui, trading_date, sector_map=sector_map)
+    if signal_status != "success":
+        ui.alert_panel(f"Signal generation failed - no orders today: {signal_status}", "error")
+        record_run(trading_date, f"pt44_{trading_date}_{ny_time.strftime('%H%M%S')}", "aborted_no_signal")
+        broker.disconnect()
+        sys.exit(1)
 
     # Step 6: Target generation
     target_weights, target_status = generate_target_portfolio(
@@ -796,6 +765,12 @@ def main():
         trading_date,
         current_holdings=current_holdings
     )
+
+    if target_weights is None or len(target_weights) == 0:
+        ui.alert_panel(f"No target portfolio ({target_status}) - no orders today", "warning")
+        record_run(trading_date, f"pt44_{trading_date}_{ny_time.strftime('%H%M%S')}", f"skipped_{target_status}")
+        broker.disconnect()
+        sys.exit(0 if target_status in ("not_rebalance_day", "no_targets") else 1)
 
     # Step 6.5: V10 AI Engine Adjustments
     ui.section("V10 AI Engine Adjustments")
